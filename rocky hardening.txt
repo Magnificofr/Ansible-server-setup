@@ -1,0 +1,140 @@
+---
+- name: Basic System Hardening and Service Setup
+  hosts: all
+  become: yes
+  vars:
+    # Define variables for OS family detection
+    apt_packages:
+      - ufw
+      - fail2ban
+      - unattended-upgrades
+      - curl
+      - htop
+    dnf_packages:
+      - firewalld
+      - fail2ban
+      - chrony
+      - htop
+    ssh_config_file: "/etc/ssh/sshd_config"
+    firewall_port_ssh: "22"
+    firewall_port_http: "80"
+    firewall_port_https: "443"
+    timezone: "UTC"
+    
+  tasks:
+
+    # 1. Update and Upgrade System Packages
+    - name: Update apt packages (Ubuntu)
+      apt:
+        update_cache: yes
+        upgrade: dist
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Update dnf packages (Rocky Linux)
+      dnf:
+        name: "*"
+        state: latest
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # 2. Install Basic Security Packages (ufw, fail2ban, etc.)
+    - name: Install necessary packages for Ubuntu
+      apt:
+        name: "{{ apt_packages }}"
+        state: present
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Install necessary packages for Rocky Linux
+      dnf:
+        name: "{{ dnf_packages }}"
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # 3. Set Up Fail2Ban (Brute-force protection)
+    - name: Enable and start fail2ban
+      systemd:
+        name: fail2ban
+        state: started
+        enabled: yes
+
+    # 4. Set Timezone
+    - name: Set system timezone
+      timezone:
+        name: "{{ timezone }}"
+
+    # 5. Configure Firewall (UFW for Ubuntu, firewalld for Rocky Linux)
+    - name: Ensure UFW is enabled and configured on Ubuntu
+      ufw:
+        state: enabled
+        policy: deny
+        rule: allow
+        name: "{{ firewall_port_ssh }}"
+        direction: in
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Ensure Firewalld is enabled and configured on Rocky Linux
+      firewalld:
+        state: enabled
+        permanent: yes
+        service: ssh
+        zone: public
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    # 6. Disable Root Login via SSH
+    - name: Disable root login via SSH
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify:
+        - Restart SSH Service
+
+    # 7. Enable UFW to allow SSH
+    - name: Allow incoming SSH connections on UFW (Ubuntu)
+      ufw:
+        rule: allow
+        name: "OpenSSH"
+        state: enabled
+      when: ansible_facts['os_family'] == 'Debian'
+
+    # 8. Configure Auto Updates (Ubuntu Only)
+    - name: Enable auto-upgrades for security updates
+      apt:
+        name: unattended-upgrades
+        state: present
+      when: ansible_facts['os_family'] == 'Debian'
+
+    # 9. Secure SSH Configurations
+    - name: Configure SSH for hardened security
+      lineinfile:
+        path: "{{ ssh_config_file }}"
+        regexp: '^{{ item.regexp }}'
+        line: "{{ item.line }}"
+      with_items:
+        - { regexp: 'PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: 'PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: 'UsePAM', line: 'UsePAM no' }
+      notify:
+        - Restart SSH Service
+
+    # 10. Set up Chrony for Time Sync (Only if Rocky Linux)
+    - name: Install chrony and configure for time synchronization (Rocky Linux)
+      dnf:
+        name: chrony
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Start chrony service (Rocky Linux)
+      systemd:
+        name: chronyd
+        state: started
+        enabled: yes
+      when: ansible_facts['os_family'] == 'RedHat'
+
+  handlers:
+
+    # Handler to restart SSH service after configuration changes
+    - name: Restart SSH Service
+      systemd:
+        name: ssh
+        state: restarted
+        enabled: yes
